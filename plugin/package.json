@@ -1,38 +1,38 @@
-﻿{
-    "name":  "redblue-adversarial",
-    "version":  "6.29.1",
-    "private":  false,
-    "type":  "module",
-    "description":  "红蓝对抗评审机制：红队只攻击、蓝队只执行与自证、主控判放行。把「有没有致命/严重问题」变成逐条可核对、可复算、可机器判定的文件结论。",
-    "exports":  {
-                    ".":  "./index.js"
-                },
-    "files":  [
-                  "index.js",
-                  "cordis.patch.yml",
-                  "skills/**/*",
-                  "tools/**/*",
-                  "docs/**/*",
-                  "CHANGES.md",
-                  "README.md"
-              ],
-    "dsh":  {
-                "bundle":  {
-                               "patch":  "./cordis.patch.yml"
-                           }
-            },
-    "keywords":  [
-                     "red-team",
-                     "adversarial-review",
-                     "code-review",
-                     "quality-gate",
-                     "deepseek-harness",
-                     "dsh"
-                 ],
-    "license":  "MIT",
-    "homepage":  "https://github.com/moophone/redblue-adversarial#readme",
-    "repository":  {
-                       "url":  "git+https://github.com/moophone/redblue-adversarial.git",
-                       "type":  "git"
-                   }
+{
+  "name": "redblue-adversarial",
+  "version": "6.29.2",
+  "private": false,
+  "type": "module",
+  "description": "红蓝对抗评审机制：红队只攻击、蓝队只执行与自证、主控判放行。把「有没有致命/严重问题」变成逐条可核对、可复算、可机器判定的文件结论。",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "skills/**/*",
+    "tools/**/*",
+    "docs/**/*",
+    "CHANGES.md",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "red-team",
+    "adversarial-review",
+    "code-review",
+    "quality-gate",
+    "deepseek-harness",
+    "dsh"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/moophone/redblue-adversarial#readme",
+  "repository": {
+    "url": "git+https://github.com/moophone/redblue-adversarial.git",
+    "type": "git"
+  }
 }
