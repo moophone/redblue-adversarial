@@ -1,0 +1,27 @@
+{
+    "protocol":  "v3.3.2",
+    "gate":  "放行",
+    "round":  2,
+    "revised":  {
+                    "path":  "deliverable\\课题16_实验定论_v2.md",
+                    "sha256":  "ad80eb642275f08c0960f1b00b1afa79840b0c7fc417621be500257dd9bcc4f9",
+                    "lines":  175
+                },
+    "tool_version":  "v3.3.2 (cite + 单数字编号 + 不成立 + R2 继承豁免)",
+    "deliverable_type":  "研究论文/报告",
+    "baseline":  [
+                     "3ecd2e01139a4fa88b525d176fa19ba4c08204e540027377b270d7517af31a5b"
+                 ],
+    "gate_detail":  {
+                        "fatal":  0,
+                        "optimize":  0,
+                        "rejected":  1,
+                        "severe":  0,
+                        "backlog":  0,
+                        "cleared":  3,
+                        "normal":  1
+                    },
+    "open":  "N01：说明.md 回写补 :19/:25；交付件「1 处」→「3 处」",
+    "stage":  "已收尾",
+    "shortcode":  "103182"
+}

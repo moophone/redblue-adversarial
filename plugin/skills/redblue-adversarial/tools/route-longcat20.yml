@@ -1,0 +1,20 @@
+# 红蓝对抗 · 派工路由：钉死 LongCat-2.0
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      longcat:
+        displayName: longcat
+        apiKeyEnv: LONGCAT_API_KEY
+        api: openai-completions
+        baseURL: https://api.longcat.chat/openai
+        models:
+          - id: LongCat-2.0
+            name: LongCat-2.0
+            contextWindow: 1048576
+            maxTokens: 131072
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: longcat
+    model: LongCat-2.0

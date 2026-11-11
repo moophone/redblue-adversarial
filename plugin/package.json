@@ -1,0 +1,10 @@
+{
+  "name": "@local/redblue-adversarial",
+  "version": "6.29.0",
+  "private": true,
+  "type": "module",
+  "description": "红蓝对抗评审机制：红队只攻击、蓝队只执行与自证、主控判放行。全部在一个对话内用子代理完成。",
+  "exports": { ".": "./index.js" },
+  "files": ["index.js", "cordis.patch.yml", "skills/**/*", "tools/**/*", "docs/**/*", "CHANGES.md", "README.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

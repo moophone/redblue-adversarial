@@ -1,0 +1,9 @@
+- insert:
+    - id: redblue-write-scope
+      name: '@local/redblue-adversarial'
+      config:
+        # 作用域值 = 产物根目录名（红队只能写这个目录下的文件）
+        roles:
+          rb-red: redblue
+          rb-devil: redblue
+          rb-domain: redblue
