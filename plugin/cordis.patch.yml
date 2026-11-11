@@ -1,4 +1,4 @@
-﻿- insert:
+- insert:
     - id: redblue-write-scope
       name: redblue-adversarial
       config:
