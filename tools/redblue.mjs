@@ -6537,7 +6537,9 @@ function xfireBrief(a) {
   const cases = read('01-cases.md')
   const target = read('00-target.md')
   const round = basename(dir)
-  const deliverable = (target.match(/\*\*靶件\*\*\s*[:：]\s*(.+)/) || [])[1] || '(见 00-target.md)'
+  // 两种写法都认：`**靶件**：xxx` 与 `- 交付件：xxx`（希腊轮次用后者）
+  const deliverable = (target.match(/\*\*靶件\*\*\s*[:：]\s*(.+)/)
+    || target.match(/[-*]\s*交付件\s*[:：]\s*(.+)/) || [])[1] || '(见 00-target.md)'
   const argMax = a.find((x) => x.startsWith('--max='))
   const maxLen = argMax ? Number(argMax.slice(6)) : 6000
   const clip = (t) => t.length > maxLen ? t.slice(0, maxLen) + "\n" + '…（此处截断）' : t
@@ -6707,6 +6709,13 @@ function xfireRound(a) {
   return 1
 }
 // 红蓝 ⇄ 针锋 交替磨合循环（用户 2026-11-15 定的架构）
+// 轮次排序：按 R 后面的数字，不是字典序（R9 必须排在 R15 前面）
+function cmpRound(a, b) {
+  const na = Number((basename(a).match(/^R(\d+)/) || [])[1] || 0)
+  const nb = Number((basename(b).match(/^R(\d+)/) || [])[1] || 0)
+  return na - nb
+}
+
 //
 //   红蓝跑一轮 → 放行后交给针锋 → 针锋挑错回写用例 → 红蓝再审 → 再交给针锋 → …
 //   直到针锋**连续两轮挑不出新东西**（或达到轮次上限）—— 这叫「磨合完毕」。
@@ -6733,8 +6742,26 @@ function loopInit(a) {
   const cap = Number((a.find((x) => x.startsWith('--max=')) || '--max=12').slice(6))
   const st = { root, cap, rounds: [], cleanXfire: 0, started: new Date().toISOString() }
   loopSave(root, st)
-  console.log('XFIRE_LOOP_INIT: ' + root + '（上限 ' + cap + ' 轮）')
-  console.log('下一层：红蓝（rb）')
+  // 开局时先看这个根下已有几轮、最新一轮放行没有 —— 别让人从红蓝重跑
+  const scan0 = (d) => {
+    try { return readdirSync(d).filter((x) => /^R\d+-/.test(x)).map((x) => join(d, x)) } catch { return [] }
+  }
+  const existing = scan0(root).concat(scan0(join(root, 'rounds'))).sort(cmpRound)
+  if (existing.length > 0) {
+    const lastR = existing[existing.length - 1]
+    console.log('XFIRE_LOOP_INIT: ' + root + '（上限 ' + cap + ' 轮）')
+    console.log('  已有 ' + existing.length + ' 个轮次，最新 = ' + lastR)
+    const rp0 = join(lastR, '03-review.md')
+    if (existsSync(rp0)) {
+      const g0 = cmdGate([rp0])
+      console.log('  最新一轮闸门退出码 = ' + g0 + '（0=已放行 → 下一层应是针锋；非 0=还没过 → 先补红蓝）')
+    } else {
+      console.log('  最新一轮还没有 03-review.md —— 先跑完红蓝这一轮')
+    }
+  } else {
+    console.log('XFIRE_LOOP_INIT: ' + root + '（上限 ' + cap + ' 轮）')
+    console.log('  空轮次根，从红蓝开始')
+  }
   return 0
 }
 
@@ -6771,7 +6798,12 @@ function loopNext(a) {
   const next = last ? (last.layer === 'rb' ? 'xfire' : 'rb') : 'rb'
   console.log('下一层：' + next)
   if (next === 'rb') {
-    console.log('  → 让红蓝审上一批针锋缺陷：蓝队逐条处置 → 复核写 03-review → 然后 record --layer=rb --pass|--fail')
+    const lastXf = [...st.rounds].reverse().find((r) => r.layer === 'xfire')
+    if (lastXf && lastXf.defects > 0) {
+      console.log('  → 让红蓝审上一批针锋缺陷（' + lastXf.defects + ' 条）：蓝队逐条处置 → 复核写 03-review → 然后 record --layer=rb --pass|--fail')
+    } else {
+      console.log('  → 从红蓝开始：跑一轮红蓝对抗（用例 → 蓝队 → 复核），然后 record --layer=rb --pass|--fail')
+    }
     return 0
   }
   // 针锋层：直接生成评审稿
@@ -6780,7 +6812,7 @@ function loopNext(a) {
     try { return readdirSync(d).filter((x) => /^R\d+-/.test(x)).map((x) => join(d, x)) }
     catch { return [] }
   }
-  const rounds = scan(root).concat(scan(join(root, 'rounds'))).sort()
+  const rounds = scan(root).concat(scan(join(root, 'rounds'))).sort(cmpRound)
   const lastRound = rounds[rounds.length - 1]
   if (!lastRound) die('xfire loop next: 轮次根下没有 R* 目录（也找了 <根>/rounds/）')
   console.log('  → 对最新一轮 ' + lastRound + ' 跑 brief，然后 crossfire_open / attack：')
