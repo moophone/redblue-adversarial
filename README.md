@@ -80,7 +80,7 @@ node tools/redblue.mjs archive <轮次目录> --tag=R1
 
 ---
 
-## 命令表（38 个）
+## 命令表（41 个）
 
 | 类别 | 命令 | 用途 |
 | --- | --- | --- |
@@ -98,6 +98,48 @@ node tools/redblue.mjs archive <轮次目录> --tag=R1
 
 ---
 
+## 红蓝 × 针锋：两层自动接力（v6.30 新增）
+
+红蓝与针锋是**两层不同的东西**，`xfire` 把它们接成自动接力：
+
+| 层 | 职责 | 验的是 |
+| --- | --- | --- |
+| **红蓝** | 把事做完并自证（用例 / 蓝队 / 机器闸门） | 「在不在、对不对」 |
+| **针锋** | 换一批独立只读专家来推翻它 | 「合不合、有没有判据」 |
+
+```
+红蓝放行 → 针锋挑错 → 红蓝审 → 针锋再挑 → … → 针锋连续 2 轮零新缺陷 = 磨合完毕
+```
+
+**用法**：
+
+```powershell
+$f="$env:DSH_HOME\skills\redblue-adversarial\tools\redblue.mjs"
+
+# 一条龙：针锋报告 → 回写用例 → 红蓝机器判定 → 结论 + 下一步
+& $n $f xfire round <轮次目录> <缺陷.md>
+
+# 交替磨合并记录状态（状态落 <轮次根>/.xfire-loop.json）
+& $n $f xfire loop init    <轮次根>
+& $n $f xfire loop record <轮次根> --layer=rb    --pass | --fail
+& $n $f xfire loop record <轮次根> --layer=xfire --defects=<几条>
+& $n $f xfire loop next   <轮次根>     # 该谁了；轮到针锋时直接出评审稿
+& $n $f xfire loop status <轮次根>
+
+# 给用户看的大白话版（必须贴进对话，不许只贴原始表）
+& $n $f xfire plain <缺陷.md>
+
+# 副本一致性闸（改完源文件跑一下）
+& $n $f copies --src <插件源> --copy <副本1> [--copy <副本2> ...]
+```
+
+**纪律**：
+
+1. 针锋的缺陷**不许直接算结论** —— 必须回写用例，走蓝队 + 闸门全流程。
+2. 放行要 `gate` 与 `adjudicate` **双过**。
+3. 给用户的针锋报告**必须用 `xfire plain` 的大白话版**（原始卡片专业且长）。
+
+---
 ## 核心设计
 
 ### 1. 闸门只认脚本
@@ -167,7 +209,7 @@ redblue-bundle/
 
 ## 版本
 
-**v6.29.0**（2026-11-11）
+**v6.30.1**（2026-11-15）
 
 - 38 个子命令 / 178 条自测
 - 新增 `history`、`spawn --retry=N`、数字清单、缓存过期报警

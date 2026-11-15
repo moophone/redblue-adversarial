@@ -223,6 +223,15 @@ function cmdInit([roundDir, ...dels]) {
   if (missing.length) die(`init: 交付件不存在: ${missing.join(', ')}`)
   const fp = fingerprint(dels)
   writeFileSync(join(roundDir, 'fingerprints', '00-baseline.txt'), fp, 'utf8')
+  // 冻结交付件（SKILL §8 已知限制 14 定的规则，2026-11-15 补上实现）：
+  // 实测 R15 全程没有 00-frozen.txt，也没有任何检查报它 —— 结果审计期间交付件被改写，
+  // 一轮里同一文件出现 4 个不同字节数（56,915 / 57,703 / 58,606 / 59,716），审计结论失去锚点。
+  const frozen = dels.map((d) => {
+    const st = statSync(d)
+    return sha256(readFileSync(d)) + '  ' + st.size + '  ' + d
+  }).join('\n') + '\n'
+  writeFileSync(join(roundDir, '00-frozen.txt'), frozen, 'utf8')
+  console.log('FROZEN: 00-frozen.txt 已写（' + dels.length + ' 个交付件）')
   console.log(`INIT_OK: ${roundDir}`)
   console.log(`baseline files=${fp.trim().split('\n').filter(Boolean).length}`)
   process.stdout.write(fp)
@@ -2857,6 +2866,25 @@ function isStrictRound(roundDir) {
 }
 function cmdGate([file]) {
   if (!file) die('usage: gate <03-review.md>')
+  // 冻结校验（2026-11-15 补）：交付件在审计期间被改写 = 审计结论无锚点，一律作废。
+  // 这是 SKILL §8 已知限制 14 定的规则，此前**只写在纸上、没有任何实现**。
+  const fz = join(dirname(file), '00-frozen.txt')
+  if (existsSync(fz)) {
+    for (const line of readFileSync(fz, 'utf8').split(/\r?\n/).filter(Boolean)) {
+      const parts = line.split(/\s+/)
+      const h = parts[0], p = parts.slice(2).join(' ')
+      if (!existsSync(p)) { console.error('GATE_FROZEN_MISSING: 冻结的交付件不见了 ' + p); return 2 }
+      const cur = sha256(readFileSync(p))
+      if (cur !== h) {
+        console.error('GATE_FROZEN_MISMATCH: 交付件 ' + p)
+        console.error('  冻结 ' + h.slice(0, 16) + ' / 现在 ' + cur.slice(0, 16))
+        console.error('  → 审计期间交付件被改写，本轮全部结论**无锚点、作废重跑**（SKILL §8 已知限制 14）')
+        return 2
+      }
+    }
+  } else {
+    console.error('NOTICE_NO_FROZEN: 本轮没有 00-frozen.txt —— 交付件若在审计期间被改，闸门查不出来')
+  }
   const rows = parseVerdict(file)
   const { t, unknown, claimed } = tally(rows)
   // v6.23 缺陷26（R5 红队 N05 直接后果）：
@@ -4795,7 +4823,8 @@ function selftest() {
     'GATE_NO_RECONCILE', 'GATE_NO_RECONCILE_CONTENT', 'GATE_RECONCILE_FAKE_REF',
     'GATE_NO_SCOPE', 'GATE_SEVERE_UNLOCATABLE', 'GATE_SEVERE_MISLOCATED', 'GATE_LOCATION_UNRESOLVABLE',
     'SHORTCODE_BAD_ROUND', 'BUNDLE_UNVERIFIED', 'SEVERITY_NO_COMPARABLE',
-    'GATE_ATTACK_STALE', 'NOTICE_NO_DELTA', 'NOTICE_SCOPE_UNQUALIFIED',
+    'GATE_ATTACK_STALE', 'GATE_FROZEN_MISMATCH', 'GATE_FROZEN_MISSING', 'NOTICE_NO_FROZEN',
+    'NOTICE_NO_DELTA', 'NOTICE_SCOPE_UNQUALIFIED',
     'NOTICE_ATTACK_MISSING', 'QUALITY_NO_RECALL',
     'ANCHOR_GENERIC', 'RECALL_TOO_PERFECT', 'ANCHOR_WEAK',
     'CARRY_INCOMPLETE', 'LOST_OPEN',
@@ -4911,6 +4940,27 @@ function selftest() {
   writeFileSync(join(noAtk, '02-blue.md'), '## 逐条处置\n\n| 用例 | 处置 |\n| --- | --- |\n| C01 | 已修 |\n', 'utf8')
   writeFileSync(join(noAtk, '03-review.md'), '| 用例 | 级别 | 处置 | 位置 | 证据 |\n| --- | --- | --- | --- | --- |\n| C01 | 一般 | 已消除 | a:1 | x |\n', 'utf8')
   ok(cmdGate([join(noAtk, '03-review.md')]) === 1, 'gate: 红队自述「本轮无红队交付」→ GATE_UNATTACKED 不放行')
+
+  // 冻结校验（2026-11-15 补）：交付件在审计期间被改写 = 审计结论无锚点，一律作废
+  // 实测 R15 全程无 00-frozen.txt 且无任何检查 → 一轮里同一文件出现 4 个不同字节数
+  const frzDir = join(tmp, 'R1-frz')
+  mkdirSync(frzDir, { recursive: true })
+  const frzDel = join(tmp, 'frz-deliverable.md')
+  writeFileSync(frzDel, 'line1' + String.fromCharCode(10) + 'line2' + String.fromCharCode(10), 'utf8')
+  cmdInit([frzDir, frzDel])
+  const frzReview = join(frzDir, '03-review.md')
+  writeFileSync(frzReview, '| N01 | 严重 | 已消除 | x |' + String.fromCharCode(10), 'utf8')
+  const gFrz0 = cmdGate([frzReview])
+  ok(gFrz0 === 0 || gFrz0 === 1, 'gate: 冻结未被破坏时正常判定（exit=' + gFrz0 + '）')
+  writeFileSync(frzDel, 'line1' + String.fromCharCode(10) + 'line2' + String.fromCharCode(10) + '审计期间偷偷改' + String.fromCharCode(10), 'utf8')
+  ok(cmdGate([frzReview]) === 2, 'gate: 交付件被改写 → GATE_FROZEN_MISMATCH 拦下（结论无锚点）')
+  // 冻结件指向已不存在的交付件
+  const missDir = join(tmp, 'R1-frzmiss')
+  mkdirSync(missDir, { recursive: true })
+  writeFileSync(join(missDir, '00-frozen.txt'), sha256(Buffer.from('x')) + '  1  ' + join(tmp, 'nope.md') + String.fromCharCode(10), 'utf8')
+  const missReview = join(missDir, '03-review.md')
+  writeFileSync(missReview, '| N01 | 严重 | 已消除 | x |' + String.fromCharCode(10), 'utf8')
+  ok(cmdGate([missReview]) === 2, 'gate: 冻结的交付件不见了 → GATE_FROZEN_MISSING')
   // v6.29M：位置栏写简写（无文件名）→ gate 仍放行，但必须报 GATE_LOCATION_UNRESOLVABLE。
   // 起因：R10 的 03-review 位置栏全是 `v5 L151`，bundle 判 UNDECIDABLE 而 gate 照旧放行 ——
   // 两条命令对同一份数据结论相反，这正是最该消掉的那类不一致。
@@ -6585,9 +6635,11 @@ function xfirePlain(a) {
   if (!f || !existsSync(f)) die('usage: xfire plain <缺陷.md>')
   const rows = parseDefectRows(readFileSync(f, 'utf8'))
   if (rows.length === 0) die('xfire plain: 缺陷文件里没有可识别的表格行（格式 | X01 | 维度 | 级别 | 位置 | 证据 | 建议 |）')
+  // 措辞必须对「机制类缺陷」与「交付件类缺陷」都成立（练手第 6 点）：
+  // 机制缺陷的后果是主控无所适从，交付件缺陷的后果是结论强度被高估 —— 用中性说法覆盖两者。
   const CONSEQ = {
-    '致命': '会让整套机制给出错误结论 —— 该拦的没拦住',
-    '严重': '会让主控无所适从，或者漏掉一道该做的检查',
+    '致命': '会让整套结论站不住 —— 该拦的没拦住',
+    '严重': '会让结论的强度被高估，或漏掉一道该做的检查',
     '一般': '影响一致性与可读性，暂时不影响结论',
     '优化': '锦上添花，不改也行',
   }
@@ -6639,6 +6691,23 @@ function xfireIntake(a) {
   for (const m of cur.matchAll(/\b[N](\d{1,3})\b/g)) maxN = Math.max(maxN, Number(m[1]))
   const rows = parseDefectRows(txt)
   if (rows.length === 0) die('xfire intake: 缺陷文件里没有可识别的表格行（格式 | X01 | 维度 | 级别 | 位置 | 证据 |）')
+  // 疑似重复检查（2026-11-15 练手抓到）：针锋专家会重复红蓝已有的用例 ——
+  // 实测针锋「安全」维度第 1 条与红蓝 N30 是同一件事（同位置、同口径）。
+  // 不自动跳过（同一位置可能确有不同缺陷），但必须让主控看见。
+  const dup = []
+  for (const r of rows) {
+    if (!r.loc) continue
+    const hit = cur.split(/\r?\n/).find((ln) => ln.startsWith('|') && ln.includes(r.loc))
+    if (hit) {
+      const idm = hit.match(/^\|\s*(N\d{1,3})\s*\|/)
+      dup.push({ x: r.id, loc: r.loc, existing: idm ? idm[1] : '?' })
+    }
+  }
+  if (dup.length > 0) {
+    console.log('')
+    console.log('NOTICE: ' + dup.length + ' 条疑似与已有用例同位置 —— 主控必须判断是不是同一件事，别把已知问题当新用例：')
+    for (const d of dup) console.log('  ' + d.x + ' 位置 ' + d.loc + ' 已有 ' + d.existing)
+  }
   const add = []
   rows.forEach((r, i) => {
     const id = 'N' + String(maxN + i + 1).padStart(2, '0')
@@ -6655,7 +6724,7 @@ function xfireIntake(a) {
   console.log('')
   console.log('===== 给用户的大白话版（必须贴到对话里，不许只贴原始表）=====')
   console.log('')
-  const CONSEQ2 = { '致命': '会让整套机制给出错误结论 —— 该拦的没拦住', '严重': '会让主控无所适从，或者漏掉一道该做的检查', '一般': '影响一致性与可读性，暂时不影响结论', '优化': '锦上添花，不改也行' }
+  const CONSEQ2 = { '致命': '会让整套结论站不住 —— 该拦的没拦住', '严重': '会让结论的强度被高估，或漏掉一道该做的检查', '一般': '影响一致性与可读性，暂时不影响结论', '优化': '锦上添花，不改也行' }
   rows.forEach((r, i) => {
     console.log('### ' + (i + 1) + '. ' + r.level + ' · ' + r.dim + ' —— ' + (r.loc || '未定位'))
     console.log('- 哪里不对：' + r.ev)
