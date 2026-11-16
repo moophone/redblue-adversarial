@@ -579,6 +579,13 @@ verdict 映射（照抄 kill-argument 的裁决表）：
 **闭环能力（v6.29 修复）**：`redblue_children` 支持 `action: "continue"`（`child_id` + `prompt`），走 `ctx.subagents.sendMessage`。
 把打回意见送回**同一个**执行手，而不是自己重写。**注意**：`startActivation` 的 `childId` 是给新孩子预分配身份，**不是**续接句柄（用它会报 `subagent already exists`）。子代理不可续时红蓝的"打回—修正—复核"闭环是断的 —— 这是 v6.28 及以前一直没发现的断点。
 
+
+**为什么该用 `--auto` 而不是凭印象选模型**（2026-11-15/16 实测）：
+用户跑了 4 个会话 6 轮，`delegate` 成功率只有 **9%–54%**，失败原因是 catpaw 余额不足、
+raccoon 限流、静默无消息 —— **这些 `route probe` 全部能提前知道**。
+凭印象选模型 = 拿没余额的通道去撞，撞一次浪费一整轮。
+`route mklib --auto` 只给**刚才真响应过**的 provider 建库，并按倍率从低到高给出派活顺序。
+**探测缓存超过 1 小时要先重跑 `route probe`**（网关按 model 动态路由）。
 **派活的现实（2026-11-08 实测 18 次 dispatch）**：成功率约 50%，且**失败通知不可信** —— 两个子代理先报失败/只写骨架，后来都交了完整稿。**必须查输出文件，不能凭通知判成败。** 已确认 `agent2api-workbuddy-intl` 是 provider 级不可用（两个模型都失败）。
 
 **归因必须用侧车文件，不许往用例表加列**（v6.29d 实测）：往多表文档加列时，脚本只认第一个表头，会把后面所有表改错位（三轮全部列数混乱，靠备份 zip 才还原）。正确做法：`redteam-roster.json` + `role-map.json` 两个侧车，对文档零侵入。
@@ -1052,6 +1059,7 @@ NOTICE_ATTACK_FAILED: 另有 2 次派出失败 —— 独立性按**实际成功
 | `route probe [过滤词]` | 对每个 provider 的**倍率最低 2 个模型**实发一次最小请求（`max_tokens=16`），测出可用性与失败类型（`NO_BALANCE` / `FORBIDDEN` / `NO_MODEL` / `NETWORK`），写 `route-cache.json` |
 | `route pick [偏好词]` | 按「**可用 + 积分倍率最低**」排序，直接给出推荐组合，并打印写库命令 |
 | `route mklib <库名> <provider> <model> [描述]` | 生成 `subagents\*.yaml`，**立即生效** |
+| `route mklib --auto [前缀] [--force]` | **一条命令建整份名册**：读 `route-cache.json`，给每个**探测通过**的 provider 建一个库（模型取倍率最低且 OK 的），并打印按倍率排序的派活顺序 |
 
 **标准流程（不要再问用户）**：
 
@@ -1059,6 +1067,8 @@ NOTICE_ATTACK_FAILED: 另有 2 次派出失败 —— 独立性按**实际成功
 route probe          # 第一次 / 缓存超过一天时
 route pick           # 看可用组合，倍率升序
 route mklib rb-x <provider> <model>   # 写库
+route mklib --auto            # 一次建完整份名册（只给探测通过的 provider）
+#   → 按倍率从低到高打印 delegate(library_id=…) 顺序
 delegate(library_id="rb-x", prompt=…)
 attack record <轮次> <provider> <model> <交付件> <角色>   # 记真实路由
 ```

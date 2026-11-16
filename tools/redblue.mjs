@@ -1286,15 +1286,43 @@ const RB_CRED = process.env.RB_CREDENTIALS || (detectDshHome() ? join(detectDshH
 const RB_CACHE = process.env.RB_ROUTE_CACHE || join(dirname(RB_CFG), 'route-cache.json')
 
 /** 从 profile 配置里解析 provider → baseURL / apiKeyEnv / models[{id,label,mult}]。 */
+// 通用解析：providers 块下**任意**命名分组都认。
+// 2026-11-16 实测：原实现只认 agent2api-*/minekuai/longcat/deepseek* 四种前缀，
+// 别人用任何别的 provider 分组（openrouter / anthropic / 自建网关 / 任意命名）插件一律看不见 ——
+// 这与「放之四海皆准」直接冲突。改成缩进敏感地识别 providers: 下所有子级分组。
 function parseProvidersFromCfg(cfgPath) {
   const L = readFileSync(cfgPath, 'utf8').split(/\r?\n/)
   const out = []
+  let pi = -1, pIndent = -1
+  for (let i = 0; i < L.length; i++) {
+    const m = L[i].match(/^(\s*)providers:\s*$/)
+    if (m) { pi = i; pIndent = m[1].length; break }
+  }
+  let childIndent = -1
+  if (pi >= 0) {
+    for (let i = pi + 1; i < L.length; i++) {
+      if (!L[i].trim()) continue
+      childIndent = L[i].match(/^(\s*)/)[1].length
+      break
+    }
+    if (childIndent <= pIndent) return out
+  }
   let cur = null
   let inModels = false
-  for (const line of L) {
-    const pm = line.match(/^(\s*)(agent2api-[\w-]+|minekuai|longcat|deepseek[\w-]*):\s*$/)
-    if (pm) { cur = { name: pm[2], baseURL: null, apiKeyEnv: null, models: [] }; out.push(cur); inModels = false; continue }
+  for (let i = pi >= 0 ? pi + 1 : 0; i < L.length; i++) {
+    const line = L[i]
+    if (!line.trim()) continue
+    const ind = line.match(/^(\s*)/)[1].length
+    if (pi >= 0 && ind <= pIndent) break
+    const gm = (pi >= 0 ? ind === childIndent : true) ? line.match(/^\s*([A-Za-z_][\w-]*):\s*$/) : null
+    if (gm) {
+      if (cur && cur.models.length) out.push(cur)
+      cur = { name: gm[1], baseURL: null, apiKeyEnv: null, models: [] }
+      inModels = false
+      continue
+    }
     if (!cur) continue
+    if (pi >= 0 && ind <= childIndent) { inModels = false; continue }
     const bm = line.match(/^\s*baseURL:\s*(\S+)\s*$/)
     if (bm) { cur.baseURL = bm[1]; continue }
     const km = line.match(/^\s*apiKeyEnv:\s*(\S+)\s*$/)
@@ -1314,7 +1342,9 @@ function parseProvidersFromCfg(cfgPath) {
       continue
     }
   }
-  return out.filter((p) => p.models.length && p.baseURL)
+  if (cur && cur.models.length) out.push(cur)
+  // 不按 baseURL 过滤：route 列表要能列出所有分组；探测时再筛（见 routeProbe）
+  return out.filter((p) => p.models.length)
 }
 
 /** 密钥优先取环境变量，其次 .credentials.yaml 的 refs。绝不打印密钥。 */
@@ -1329,6 +1359,7 @@ function readApiKey(envName) {
 
 /** 发一次最小请求。max_tokens 给 16 是为了让推理模型也能出 content 且花费可忽略。 */
 async function probeOne(baseURL, key, modelId) {
+  if (!key) return { ok: false, kind: 'NO_KEY', msg: '该 provider 没有可用密钥（apiKeyEnv 未配或取不到）' }
   const t0 = Date.now()
   try {
     const r = await fetch(String(baseURL).replace(/\/+$/, '') + '/chat/completions', {
@@ -1355,10 +1386,11 @@ async function routeProbe(args) {
   const filter = (args || []).find((a) => !/\.ya?ml$/i.test(a)) || ''
   const cfg = (args || []).find((a) => /\.ya?ml$/i.test(a)) || RB_CFG
   if (!existsSync(cfg)) die('route probe: 找不到配置 ' + cfg)
-  const provs = parseProvidersFromCfg(cfg).filter((p) => !filter || p.name.includes(filter))
+  const provs = parseProvidersFromCfg(cfg).filter((p) => p.baseURL && (!filter || p.name.includes(filter)))
   if (!provs.length) { console.error('ROUTE_PROBE_EMPTY: 配置里没解析出 provider'); return 2 }
-  const key = readApiKey('AGENT2API_API_KEY')
-  if (!key) { console.error('ROUTE_PROBE_NO_KEY: 找不到 AGENT2API_API_KEY（环境变量与 .credentials.yaml 都没有）'); return 2 }
+  // 每个 provider 用**自己的** apiKeyEnv（2026-11-16 修）：
+  // 原实现全局只用一个 AGENT2API_API_KEY —— 别人用自己的网关/密钥时，探测必然失败或打错网关。
+  // 拿不到密钥的 provider 跳过并说明，不静默失败。
   console.log('PROBE: ' + provs.length + ' 个 provider，每个取倍率最低的 2 个模型实发最小请求（max_tokens=16）')
   const results = []
   for (const p of provs) {
@@ -1366,7 +1398,8 @@ async function routeProbe(args) {
     const picks = sorted.slice(0, 2)
     const perModel = []
     for (const m of picks) {
-      const r = await probeOne(p.baseURL, key, m.id)
+      const key = p.apiKeyEnv ? readApiKey(p.apiKeyEnv) : null
+    const r = await probeOne(p.baseURL, key, m.id)
       perModel.push({ model: m.id, label: m.label, mult: m.mult, ...r })
     }
     const okAny = perModel.some((x) => x.ok)
@@ -1374,7 +1407,8 @@ async function routeProbe(args) {
     const detail = perModel
       .map((x) => (x.ok ? x.model + ' OK ' + x.ms + 'ms' : x.model + ' ' + x.kind))
       .join(' ; ')
-    console.log('  ' + (okAny ? 'OK  ' : 'FAIL') + ' ' + String(p.name).padEnd(22) + detail)
+    const tag = okAny ? 'OK  ' : (perModel.length && perModel.every((x) => x.kind === 'NO_KEY') ? 'SKIP' : 'FAIL')
+    console.log('  ' + tag + ' ' + String(p.name).padEnd(22) + detail)
   }
   const cache = { probedAt: new Date().toISOString(), cfg, results }
   writeFileSync(RB_CACHE, JSON.stringify(cache, null, 2), 'utf8')
@@ -1429,7 +1463,70 @@ function routePick(args) {
 }
 
 /** route mklib <库名> <provider> <model> [描述] —— 写 subagents/*.yaml，立即生效。 */
+/**
+ * route mklib --auto [库名前缀] [--force]
+ *
+ * 读 route-cache.json，给每个**探测通过**的 provider 建一个具名库条目，
+ * 模型取该 provider 倍率最低且 OK 的那个；顺带打印按倍率排序的派活顺序。
+ *
+ * 为什么加（2026-11-16 实测）：用户跑 4 个会话，delegate 成功率 9%–54%，
+ * 失败原因是 catpaw 余额不足 / raccoon 限流 / 静默 —— 而这些**探测就能提前知道**。
+ * 原来要一个一个 route mklib 手建，主控只能凭印象选，选到没余额的就这么浪费掉一轮。
+ * --auto 只给刚才真响应过的 provider 建库，并给出派活顺序。
+ */
+function routeMklibAuto(args) {
+  const force = args.includes('--force')
+  const pos = args.filter((a) => a !== '--force')
+  const prefix = pos[0] || 'rb-'
+  const cache = readRouteCache()
+  if (!cache) die('route mklib --auto: 还没有探测缓存，先跑 route probe（不猜）')
+  const dir = process.env.RB_SUBAGENT_DIR || (detectDshHome() ? join(detectDshHome(), 'subagents') : null)
+  if (!existsSync(dir)) die('route mklib --auto: subagents 目录不存在 ' + dir)
+  const ok = cache.results.filter((r) => r.ok)
+  if (!ok.length) die('route mklib --auto: 探测缓存里没有任何可用 provider —— 先解决余额/网络再来')
+  const plan = []
+  let written = 0, skipped = 0
+  for (const r of ok) {
+    const good = r.models.filter((m) => m.ok)
+    if (!good.length) continue
+    const pick = [...good].sort((a, b) => (a.mult == null ? 99 : a.mult) - (b.mult == null ? 99 : b.mult))[0]
+    const libName = prefix + r.provider.replace(/[^A-Za-z0-9_-]/g, '-')
+    const fp = join(dir, libName + '.yaml')
+    if (existsSync(fp) && !force) { skipped++; continue }
+    const lines = [
+      'description: 红蓝对抗角色（' + r.provider + '/' + pick.model + '，来自 route mklib --auto）',
+      'provider: ' + r.provider,
+      'model: ' + pick.model,
+      'maxDepth: 1',
+      'backgroundMode: continuable',
+      'persona: |',
+      '  你是红蓝对抗机制里的一个角色，运行在 ' + r.provider + '/' + pick.model + ' 上。',
+      '  只做分配给你的那一件事（攻击 / 处置 / 复核 / 复算），不越界。',
+      '',
+      '  硬要求：',
+      '  - 每条结论必须给 文件名:行号 或 命令+实际输出，没有的不写',
+      '  - 无法核实就写「未核实，原因：…」，不许猜',
+      '  - 只读，不改任何文件（除非角色明确要求改）',
+      '',
+    ]
+    writeFileSync(fp, lines.join('\n'), 'utf8')
+    written++
+    plan.push({ provider: r.provider, model: pick.model, mult: pick.mult, lib: libName })
+  }
+  plan.sort((a, b) => (a.mult == null ? 99 : a.mult) - (b.mult == null ? 99 : b.mult))
+  console.log('ROUTE_MKLIB_AUTO: 建了 ' + written + ' 个库' + (skipped ? '（跳过已存在 ' + skipped + '）' : ''))
+  console.log('探测时间: ' + (cache.probedAt || '(未知)'))
+  console.log('')
+  console.log('派活顺序（按倍率从低到高，越前越省）：')
+  plan.forEach((q, i) => console.log('  ' + (i + 1) + '. delegate(library_id="' + q.lib + '")   ' + q.provider + '/' + q.model + (q.mult != null ? '  ×' + q.mult : '')))
+  console.log('')
+  console.log('⚠ 缓存有时效：网关按 model 动态路由。超过 1 小时先重跑 route probe。')
+  return 0
+}
+
 async function routeMklib(args) {
+  // --auto：从探测缓存一次性建出整份名册（见上）
+  if ((args || []).includes('--auto')) return routeMklibAuto(args.filter((a) => a !== '--auto'))
   const force = (args || []).includes('--force')
   const pos = (args || []).filter((a) => a !== '--force')
   const libName = pos[0]
@@ -2183,19 +2280,11 @@ function cmdRoute(args) {
     || (detectDshHome() ? join(detectDshHome(), 'profiles', 'desktop', 'cordis.patch.yml') : null)
   const filter = args.find((a) => !/\.ya?ml$/i.test(a)) || ''
   if (!existsSync(cfg)) die(`route: 找不到 profile 配置: ${cfg}（可传一个 .yml 路径，或设 RB_PROFILE_CONFIG）`)
-  const lines = readFileSync(cfg, 'utf8').split(/\r?\n/)
+  // 2026-11-16：直接复用 parseProvidersFromCfg —— 原来这里另写了一套内联解析，
+  // 与探测用的解析器不一致（实测模型数全是 0），且同样限死前缀。一处解析，两处用。
+  const provs = parseProvidersFromCfg(cfg)
   const map = new Map()
-  let cur = null
-  for (const line of lines) {
-    const h = line.match(/^(\s*)([A-Za-z0-9_-]+):\s*$/)
-    if (h && /^(agent2api-|minekuai|longcat|deepseek)/.test(h[2])) {
-      cur = h[2]
-      if (!map.has(cur)) map.set(cur, [])
-      continue
-    }
-    const m = line.match(/^\s*-\s*id:\s*(\S+)\s*$/)
-    if (m && cur) map.get(cur).push(m[1])
-  }
+  for (const p of provs) map.set(p.name, p.models.map((m) => m.id))
   if (!map.size) { console.error('ROUTE_EMPTY: 配置里没解析出任何 provider —— 结构可能变了，需要更新本命令的解析规则'); return 2 }
   let shown = 0
   for (const [p, models] of [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
