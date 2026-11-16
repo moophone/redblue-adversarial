@@ -1492,7 +1492,19 @@ function routeMklibAuto(args) {
     const pick = [...good].sort((a, b) => (a.mult == null ? 99 : a.mult) - (b.mult == null ? 99 : b.mult))[0]
     const libName = prefix + r.provider.replace(/[^A-Za-z0-9_-]/g, '-')
     const fp = join(dir, libName + '.yaml')
-    if (existsSync(fp) && !force) { skipped++; continue }
+    // 已存在且未 --force 时跳过 —— 但必须比对，不一致要报警：
+    // 实测 rb-spark.yaml 早于本命令存在且指向 agent2api-loomy，
+    // 若静默跳过，错映射会被永久保留（下一轮派活就派到错的模型上）。
+    if (existsSync(fp) && !force) {
+      skipped++
+      const t = readFileSync(fp, 'utf8')
+      const ep = (t.match(/^provider:\s*(\S+)/m) || [])[1] || ''
+      const em = (t.match(/^model:\s*(\S+)/m) || [])[1] || ''
+      if (ep !== r.provider || em !== pick.model) {
+        console.log('  ⚠ 已存在但指向不同：' + libName + ' = ' + ep + '/' + em + '，探测建议 ' + r.provider + '/' + pick.model + '（要改加 --force）')
+      }
+      continue
+    }
     const lines = [
       'description: 红蓝对抗角色（' + r.provider + '/' + pick.model + '，来自 route mklib --auto）',
       'provider: ' + r.provider,
@@ -3359,7 +3371,9 @@ function cmdGate([file]) {
     console.log('        **不证明里面写的是真的**。机械阈值是存在性下限，不是质量标准。')
     return 0
   }
-  console.log('GATE: 进下一轮')
+  // 措辞必须自解释：进下一轮 = 本轮不放行（exit 1）。
+  // 实测有人（含用户）把它读成「通过」—— 一个措辞让人以为机制被改了，比机制本身更贵。
+  console.log('GATE: 进下一轮（= 本轮不放行，exit 1；未结案的条目须先闭合）')
   return 1
 }
 
@@ -6988,6 +7002,85 @@ function loopStatus(a) {
   return loopDone(st) ? 0 : 1
 }
 
+// 裁决表解析：| X01 | endorsed|rejected | 理由 | 证据 | （可再加 维度/级别/位置 三列）
+function parseAdjRows(txt) {
+  const rows = []
+  for (const line of txt.split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t.startsWith('|')) continue
+    const c = t.split('|').map((x) => x.trim()).slice(1, -1)
+    if (!/^X\d{1,3}$/.test(c[0] || '')) continue
+    const v = (c[1] || '').toLowerCase()
+    if (v !== 'endorsed' && v !== 'rejected') continue
+    rows.push({ id: c[0], verdict: v, reason: c[2] || '', ev: c[3] || '', dim: c[4] || '未分类', level: c[5] || '一般', loc: c[6] || '' })
+  }
+  return rows
+}
+
+// 裁决：针锋的缺陷由**红蓝层**判，不靠用户在卡片上点。
+//
+// 为什么需要它（2026-11-17 用户质问「引进针锋是干什么的？摆设啊？」）：
+//   针锋只暴露 9 个工具（plan_review/open/stance/attack/collect/finish/recheck/export/report），
+//   **没有一个能改缺陷状态** —— 服务端有 crossfire/defect.setStatus，但没暴露成工具；
+//   裁决在它那边只能由人在卡片上点，而用户明确说过「我裁决不了一点，因为我不懂」。
+//   所以裁决权挪到红蓝层：主控逐条核实，认定/驳回都要给理由与证据，机器留痕。
+//
+// 用法：xfire adjudicate <轮次目录> <裁决.md>
+//   | X01 | endorsed | 理由 | 证据（文件:行号 或 命令+输出）| 维度 | 级别 | 位置 |
+//   | X02 | rejected | 理由（必填） | — | 维度 | 级别 | 位置 |
+//   endorsed → 进 01-cases.md；rejected → 进 06-xfire-adjudication.md 留痕。
+function xfireAdjudicate(a) {
+  const dir = a[0], f = a[1]
+  if (!dir || !f) die('usage: xfire adjudicate <轮次目录> <裁决.md>')
+  if (!existsSync(f)) die('xfire adjudicate: 裁决文件不存在: ' + f)
+  const rows = parseAdjRows(readFileSync(f, 'utf8'))
+  if (rows.length === 0) die('xfire adjudicate: 裁决表里没有可识别的行（| X01 | endorsed | 理由 | 证据 |）')
+  const endorsed = [], rejected = []
+  for (const r of rows) {
+    if (r.verdict === 'rejected' && !r.reason) {
+      console.error('XFIRE_ADJ_REJECT_NEEDS_REASON: ' + r.id + ' 驳回必须给理由（针锋的硬规则：驳回必填理由，那也是「用户怎么想」的唯一来源）')
+      return 2
+    }
+    if (r.verdict === 'endorsed') endorsed.push(r); else rejected.push(r)
+  }
+  // 认定 → 进用例表（编号续排，只增不改）
+  const casePath = join(dir, '01-cases.md')
+  const cur = existsSync(casePath) ? readFileSync(casePath, 'utf8') : ''
+  if (endorsed.length > 0) {
+    const ids = [...cur.matchAll(/^\|\s*(N\d{1,3})\s*\|/gm)].map((m) => parseInt(m[1].slice(1), 10))
+    let n = ids.length ? Math.max(...ids) : 0
+    const add = endorsed.map((r) => {
+      n += 1
+      const id = 'N' + String(n).padStart(2, '0')
+      return '| ' + id + ' | ' + r.dim + ' | ' + r.level + ' | ' + (r.loc || '—') + ' | ' + (r.reason + '；证据：' + (r.ev || '—')).replace(/\|/g, '/') + ' | — | 针锋红队 |'
+    }).join('\n')
+    writeFileSync(casePath, cur.replace(/\s*$/, '') + '\n' + add + '\n', 'utf8')
+  }
+  // 裁决档案（认定 + 驳回都留痕）
+  const today = new Date().toISOString().slice(0, 10)
+  const L = [
+    '# 针锋缺陷裁决（xfire adjudicate，' + today + '）',
+    '',
+    '> 裁决由**红蓝层**做，不靠用户在针锋卡片上点 —— 针锋的工具集里没有改缺陷状态的入口，',
+    '> 而用户明确表示无法逐条裁决。认定 = 成立并作为用例进入蓝队处置；驳回 = 不成立，理由留痕。',
+    '',
+    '| 编号 | 裁决 | 维度 | 原级别 | 位置 | 理由 | 证据 |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+  ]
+  for (const r of [...endorsed, ...rejected]) {
+    L.push('| ' + [r.id, r.verdict === 'endorsed' ? '✅ 认定' : '❌ 驳回', r.dim, r.level, r.loc || '—', r.reason, r.ev || '—'].map((x) => (x || '').replace(/\|/g, '/')).join(' | ') + ' |')
+  }
+  L.push('', '## 统计', '', '- 认定 **' + endorsed.length + '** 条 → 已进 01-cases.md（蓝队逐条处置）', '- 驳回 **' + rejected.length + '** 条 → 理由见上表', '- 合计 ' + rows.length + ' 条', '')
+  writeFileSync(join(dir, '06-xfire-adjudication.md'), L.join('\n'), 'utf8')
+  console.log('XFIRE_ADJUDICATE_OK: 认定 ' + endorsed.length + ' / 驳回 ' + rejected.length + '（共 ' + rows.length + '）')
+  console.log('  用例表: ' + casePath)
+  console.log('  裁决档案: ' + join(dir, '06-xfire-adjudication.md'))
+  console.log('')
+  console.log('===== 裁决结果（大白话）=====')
+  for (const r of endorsed) console.log('  ✅ ' + r.id + ' 成立 —— ' + (r.reason || '').slice(0, 90))
+  for (const r of rejected) console.log('  ❌ ' + r.id + ' 不成立 —— ' + (r.reason || '').slice(0, 90))
+  return 0
+}
 function cmdXfire(args) {
   const sub = args[0]
   if (sub === "brief") return xfireBrief(args.slice(1))
@@ -6995,6 +7088,7 @@ function cmdXfire(args) {
   if (sub === "plain") return xfirePlain(args.slice(1))
   if (sub === "round") return xfireRound(args.slice(1))
   if (sub === "loop") return cmdXfireLoop(args.slice(1))
+  if (sub === "adjudicate") return xfireAdjudicate(args.slice(1))
   die("usage: xfire brief|intake|plain|round|loop ...")
 }
 
