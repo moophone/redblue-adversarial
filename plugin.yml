@@ -1,0 +1,106 @@
+# ── redblue-adversarial ───────────────────────────────────────────────────────
+# 红蓝对抗评审机制：红队只攻击、蓝队只执行与自证、主控判放行。
+# 全部在一个对话内用子代理完成，运行中不向用户提问。
+#
+# 这个插件注入 1 行 runtime 配置（redblue-write-scope，见 patch 段）。
+# 其余载荷：
+#   ① skills/redblue-adversarial/SKILL.md   技能正文（deploy.mjs 自动建 junction 发布）
+#   ② tools/redblue.mjs                     确定性判定工具，22 个子命令
+#   ③ tools/rb-run.mjs                      可选：headless 派工器（跨厂商角色）
+#   ④ tools/route-*.yml                     可选：每个模型一条路由
+#   ⑤ runtime/index.mjs                     红队写入面收敛（guard，按路径）
+#   ⑥ docs/                                 协议、角色卡、模板、错误类型
+#
+# 关于 runtime 行：注入的是**写入面收敛**，不是模型行。
+#   红蓝队的模型仍由 $DSH_HOME/subagents/*.yaml 决定，改那存盘即生效 ——
+#   用户要的「模型随时可改」没有被钉死。runtime 行只加一道与模型无关的闸。
+#
+# 依赖（不装也能用，但缺一项就少一条通道）：
+#   - `dsh-subagent-library`  名册热加载，让红/蓝队出现在子代理看板
+#   - 系统 `D:\anaconda\python.exe`  复算脚本用
+#
+# 已知边界（如实记录，不要以为改配置能解决）：
+#   - `delegate` 起蓝队会偶发 compaction 不收敛、零产出且不报错 → 主控亲自执行兜底
+#   - headless `rb-run.mjs` 子代理是独立进程，**不会**出现在本会话子代理看板
+#   - 三者不可互相替代：红队走 delegate、复核走 headless、蓝队主控执行
+id: redblue-adversarial
+title: 红蓝对抗评审（单对话自动化 + 确定性闸门）
+description: |
+  把「这份交付件有没有致命/严重问题」变成逐条可核对、可复算、可机器判定的文件结论。
+
+  三个角色，一个对话：
+    红队 —— 只攻击。零上下文，独立发现，每条指到文件与行号，必须能复现。
+    蓝队 —— 只执行与自证。逐条处置，不许辩解，必须给复算证据。
+    主控 —— 判放行。跑 `redblue.mjs` 出确定性结论，不靠"我觉得"。
+
+  载荷：
+    - SKILL.md   技能正文（625 行）。含 §0 产物位置、§2 十五条硬约束、
+                 §4 三态判定、§8 二十七个踩过的坑、§9 十八条元教训。
+    - redblue.mjs 22 个子命令（init/fp/diff/shortcode/contract/cite/scaffold/
+                 audit/recount/gate/validate/salvage/checkpoint/adjudicate/
+                 selftest/reattack/converge/severity/bundle/churn/auto/ask），
+                 65 项 selftest 断言。
+    - rb-run.mjs 可选 headless 派工器，让红/蓝队跑在跨厂商模型上。
+
+  核心设计：**闸门只认脚本，不认人话。** 每一类解析缺陷（M6/M9/M11/M12）
+  都有同一个签名 —— 解析出比实际少的行却静默 exit 0。所以 0 行一律
+  UNDECIDABLE（exit 2），绝不 PASS。
+
+  产物落在本工作区的 `redblue/` 目录下
+  （`redblue/rounds/R<轮号>-<标识>/`），不落在本插件目录，
+  也不落在已废弃的 `_redblue`。
+
+patch: |
+  # 本插件注入 1 行 runtime 配置：redblue-write-scope（见 runtime/index.mjs）。
+  #
+  # 它做什么：把红队的**写入面按路径收敛**到当轮产物目录。
+  #   红队仍能写自己的 01-cases*.md（那是它的交付物），但 write/edit 改被审
+  #   交付件会在**调用发生前**被拒。它把 SKILL.md 里「收尾校验指纹」的事后
+  #   取证升级为事前拦截（实测那四个校验点 3 次运行零命中；指纹校验仍保留
+  #   作第二道防线，见 SKILL.md 硬规则 5）。
+  #
+  # 为什么不是完全只读（照搬 dsh-superagent 的 router preset）：
+  #   红队必须能写自己的用例表、必须能跑 redblue.mjs，纯只读会直接废掉机制。
+  #   硬规则 5 防的从来不是「红队写自己的用例」，而是「红队改被审件」
+  #   （R5 期间交付件 8 次改写，事后核实全部来自主控自己的审计编辑，
+  #   「红队改交付件」从未发生；守卫防的是这条路径本身，不是这段历史）。
+  #   所以按路径收窄，不按工具名收窄。
+  #
+  # 怎么启用：角色清单在本行的 config.roles 里（默认已配好 rb-red/rb-devil/rb-domain）。
+  #   改成 `roles: {}` 即整体关闭，行为与升级前完全一致（向后兼容）。
+  #
+  # 为什么不把标记写进名册 yaml（实测，别试）：
+  #   dsh-subagent-library 的条目 schema 对未知字段是**硬拒绝**。在
+  #   rb-red.yaml 里加一行 `writeScope: redblue` 会让该条目报「未知字段：
+  #   writeScope」并整个加载失败 —— 三个红队角色会一起从子代理看板消失。
+  #   名册只能有它认识的 10 个键：description / provider / model /
+  #   subagentProvider / reasoningEffort / maxTokens / persona / toolFilter /
+  #   maxDepth / backgroundMode（外加 enabled）。
+  #
+  # 机制：agent.ctx.tools.guard()，DSH 官方 per-agent 单调拒绝钩子，
+  #   在 tools/pre-execute 之后、dispatch 之前执行，不可被其他 guard 推翻。
+  #   已用 17 项单元断言验证（角色识别 6 项 + 路径判定 11 项）。
+  #
+  # 已知残留（如实记录）：bash/pwsh 是任意命令，解析不出重定向目标，所以
+  #   shell 写入**没有**被限制。红队要跑 redblue.mjs 就必须留 shell。
+  #   这一段仍靠 SKILL.md 文字约束兜底，要彻底堵死需要沙箱级路径 ACL。
+  - insert:
+      - id: redblue-write-scope
+        name: D:/1a个人/dsh插件技能/plugins/redblue-adversarial/runtime/index.mjs
+        config:
+          # 作用域值 = 产物根目录名。产物根 2026-11-02 由 `redblue` 更名为
+          # `redblue`（守卫按路径段匹配，二者必须一致，
+          # 否则红队往产物根写会被全部拒绝）。与 runtime/index.mjs 的
+          # DEFAULT_ROLES 保持同步。
+          roles:
+            rb-red: redblue
+            rb-devil: redblue
+            rb-domain: redblue
+
+# ── SKILLS ───────────────────────────────────────────────────────────────────
+# skills/redblue-adversarial/SKILL.md → junction 到 <DSH_HOME>/skills/redblue-adversarial
+# 用户技能根被每个 profile 的 base bundle 挂载，所以一条链接服务整个 DSH，当场生效。
+#
+# ⚠ 迁移注意：本插件首次部署时，若 <DSH_HOME>/skills/redblue-adversarial 已存在
+# 且是**真目录**（历史遗留），deploy.mjs 按安全规则**不会覆盖真目录**，只会告警。
+# 迁移步骤见同目录 MIGRATION.md。

@@ -1,0 +1,20 @@
+# 派工路由：WorkBuddy / hy3  x0.00 免费
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      agent2api:
+        displayName: Agent2API
+        api: openai-completions
+        apiKeyEnv: AGENT2API_KEY
+        baseURL: http://127.0.0.1:3065/v1
+        models:
+          - id: hy3
+            name: Hunyuan 3 (WB)
+            contextWindow: 200000
+            maxTokens: 32000
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: agent2api
+    model: hy3
